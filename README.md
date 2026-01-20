@@ -1,4 +1,5 @@
-# pytorch_project_template
-A simple git repository structure for a pytorch deep learning project
+ # ROIDetect v2
 
-Start a new pytorch project today by initializing a repo from this template
+ This repository is the training module for the marker detection model in the PGCView V2 image analysis pipeline. We will try out several different architectures
+
+ 
