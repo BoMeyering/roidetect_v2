@@ -17,10 +17,8 @@ logging_level: DEBUG
 
 # Directories
 directories:
-
-directories:
   train_dir: data/processed/train/labeled
-  val_dir: "data/processed/valid/images
+  val_dir: data/processed/val/images
   test_dir: data/processed/test
   annotations_file: data/formatted_bboxes.json
   output_dir: outputs
@@ -29,14 +27,14 @@ directories:
 
 # Training
 training:
-  epochs: 100
+  epochs: 300
   sanity_check: True
 
 # Model Architecture
 model:
-  config:
-    encoder_depth: 5
-    classes: 3
+  backbone_out_channels: 256
+  num_classes: 3
+  detections_per_img: 100
 
 # Optimizer stuff
 optimizer:
@@ -46,7 +44,7 @@ optimizer:
   ema: True
   ema_decay: 0.9
   optimizer_params: 
-    lr: 0.003
+    lr: 0.0003
     momentum: 0.9
     nesterov: True
     gamma: 0.99

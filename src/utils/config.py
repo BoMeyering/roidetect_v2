@@ -13,46 +13,8 @@ from omegaconf import OmegaConf
 from enum import Enum
 from typing import List, Optional, Union, Tuple
 
-# TO REMOVE WHEN NO LONGER NEEDED!
-@dataclass
-class BatchSize:
-    labeled: int=2
-    unlabeled: int=2
-
-
-class ModelArchitecture(Enum):
-    """
-    Enumeration of valid segmentation model architectures from segmentation_models_pytorch.
-    """
-    
-    DEEPLABV3 = 'DeepLabV3'
-    DEEPLABV3PLUS = 'DeepLabV3Plus'
-    FPN = 'FPN'
-    LINKNET = 'Linknet'
-    MANET = 'MAnet'
-    PAN = 'PAN'
-    PSPNET = 'PSPNet'
-    SEGFORMER = 'Segformer'
-    UPERNET = 'UPerNet'
-    UNET = 'Unet'
-    UNETPLUSPLUS = 'UnetPlusPlus'
-
-class LossCriterion(Enum):
-    """
-    Enumeration of valid loss functions implemented in src.losses
-    """
-    CELOSS = 'CELoss'
-    FOCALLOSS = 'FocalLoss'
-    CBLOSS = 'CBLoss'
-    ACBLOSS = 'ACBLoss'
-    RECALLLOSS = 'RecallLoss'
-    DICELOSS = 'DiceLoss'
-    TVERSKYLOSS = 'TverskyLoss'
-    TVMFDICELOSS = 'TvmfDiceLoss'
-
 @dataclass
 class Images:
-    input_channels: int=3
     resize: List[int]=field(default_factory=lambda: [512, 512])
 
 @dataclass
@@ -60,10 +22,10 @@ class Directories:
     train_dir: str='data/processed/train/labeled'
     val_dir: str='data/processed/val'
     test_dir: str='data/processed/test'
+    annotations_file: str='data/formatted_bboxes.json'
     output_dir: str='outputs'
     checkpoint_dir: str='model_checkpoints'
     log_dir: str='logs/run_logs'
-    starting_checkpoint_path: Optional[str]=None
 
 @dataclass
 class FlexmatchDirectories:
@@ -82,22 +44,6 @@ class Training:
     sanity_check: bool=True
 
 @dataclass
-class Loss:
-    name: LossCriterion=LossCriterion.CELOSS
-    class_sample_count_path: Optional[str]=None
-    samples: Optional[List[float]]=field(default_factory=list)
-    weights: Optional[List[float]]=field(default_factory=list)
-    reduction: str='mean'
-    loss_type: str='CELOSS'
-    gamma: float=1.0
-    smooth: float=0.0
-    alpha: float=0.5
-    beta: float=0.5
-    kappa: float=0.0
-    lambda_k: Optional[float]=None
-    exclude_empty_target: bool=True
-
-@dataclass
 class FlexMatch:
     tau: float=0.95
     mapping: str="linear"
@@ -107,17 +53,11 @@ class FlexMatch:
     u_batch_size: int=2
 
 @dataclass
-class SMPModelConfig:
-    encoder_name: Optional[str]='resnet18'
-    encoder_depth: Optional[int]=None
-    encoder_weights: Optional[str]='imagenet'
-    input_channels: Optional[int]=3
-    classes: Optional[int]=None
-
-@dataclass
 class Model:
-    architecture: ModelArchitecture=ModelArchitecture.UNET
-    config: SMPModelConfig=field(default_factory=SMPModelConfig)
+    backbone_out_channels: Optional[int]=256
+    num_classes: Optional[int]=None
+    detections_per_img: int=100
+
 
 @dataclass
 class OptimizerParams:
@@ -179,36 +119,33 @@ class TrainSupervisedConfig:
     images: Images=field(default_factory=Images)
     metadata: Metadata=field(default_factory=Metadata)
     logging_level: str='INFO'
-    tb_exclude_classes: Optional[List[int]]=None
     directories: Directories=field(default_factory=Directories)
     training: Training=field(default_factory=Training)
     model: Model=field(default_factory=Model)
     optimizer: Optimizer=field(default_factory=Optimizer)
     scheduler: Scheduler=field(default_factory=Scheduler)
-    loss: Loss=field(default_factory=Loss)
     batch_size: int=2
     num_workers: int=2
 
-@dataclass
-class TrainFlexmatchConfig:
-    model_run: str='flexmatch_model_run'
-    device: str='cpu'
-    rank: Optional[int]=None
-    local_rank: Optional[int]=None
-    world_size: Optional[int]=None
-    is_main: Optional[bool]=None
-    images: Images=field(default_factory=Images)
-    metadata: Metadata=field(default_factory=Metadata)
-    logging_level: str='INFO'
-    tb_exclude_classes: Optional[List[int]]=None
-    directories: FlexmatchDirectories=field(default_factory=FlexmatchDirectories)
-    training: Training=field(default_factory=Training)
-    model: Model=field(default_factory=Model)
-    optimizer: Optimizer=field(default_factory=Optimizer)
-    scheduler: Scheduler=field(default_factory=Scheduler)
-    loss: Loss=field(default_factory=Loss)
-    flexmatch: FlexMatch=field(default_factory=FlexMatch)
-    num_workers: int=2
+# @dataclass
+# class TrainFlexmatchConfig:
+#     model_run: str='flexmatch_model_run'
+#     device: str='cpu'
+#     rank: Optional[int]=None
+#     local_rank: Optional[int]=None
+#     world_size: Optional[int]=None
+#     is_main: Optional[bool]=None
+#     images: Images=field(default_factory=Images)
+#     metadata: Metadata=field(default_factory=Metadata)
+#     logging_level: str='INFO'
+#     tb_exclude_classes: Optional[List[int]]=None
+#     directories: FlexmatchDirectories=field(default_factory=FlexmatchDirectories)
+#     training: Training=field(default_factory=Training)
+#     model: Model=field(default_factory=Model)
+#     optimizer: Optimizer=field(default_factory=Optimizer)
+#     scheduler: Scheduler=field(default_factory=Scheduler)
+#     flexmatch: FlexMatch=field(default_factory=FlexMatch)
+#     num_workers: int=2
 
 
 def set_run_name(conf: OmegaConf):

@@ -6,10 +6,12 @@ BoMeyering 2026
 
 # Import statements
 import torch
+import torchvision
 import torch.nn as nn
 from collections import OrderedDict
+from omegaconf import OmegaConf
 from torchvision.models import swin_t, Swin_T_Weights
-from torchvision.models.detection import RetinaNet
+from torchvision.models.detection import RetinaNet, fasterrcnn_resnet50_fpn_v2
 from torchvision.models.detection.anchor_utils import AnchorGenerator
 from torchvision.models.feature_extraction import create_feature_extractor
 from torchvision.ops import FeaturePyramidNetwork
@@ -56,20 +58,43 @@ class SwinFPN(nn.Module):
 
         return feats
 
-def retinanet_swin(num_classes=2, backbone_out_channels=256):
-    backbone = SwinFPN(out_channels=backbone_out_channels)
+def retinanet_swin(conf: OmegaConf) -> RetinaNet:
+    """
+    Creates a RetinaNet model with a Swin Transformer backbone.
+    """
+
+    backbone = SwinFPN(out_channels=conf.backbone_out_channels)
 
     anchor_generator = AnchorGenerator(
-        sizes=((32,), (64,), (128,), (256,)),   # one per level
+        sizes=((4,), (8,), (16,), (32,)),   # one per level
         aspect_ratios=((0.5, 1.0, 2.0),) * 4,
     )
 
     model = RetinaNet(
         backbone,
-        num_classes=num_classes,
+        num_classes=conf.num_classes,
         anchor_generator=anchor_generator,
+        detections_per_img=conf.detections_per_img,
     )
 
-    model.detections_per_img = 100
+    return model
+
+def create_fasterrcnn(conf: OmegaConf) -> torch.nn.Module:
+    """
+    Creates a Faster R-CNN model with a Swin Transformer backbone.
+    """
+
+    anchor_generator = AnchorGenerator(
+        sizes=((8,), (16,), (32,), (64,)),   # one per level
+        aspect_ratios=((0.5, 1.0, 2.0),) * 4,
+    )
+
+    model = fasterrcnn_resnet50_fpn_v2(
+        weights=None,
+        weights_backbone=torchvision.models.ResNet50_Weights.IMAGENET1K_V1,
+        num_classes=conf.num_classes,
+        anchor_generator=anchor_generator,
+        box_detections_per_img=conf.detections_per_img,
+    )
 
     return model
