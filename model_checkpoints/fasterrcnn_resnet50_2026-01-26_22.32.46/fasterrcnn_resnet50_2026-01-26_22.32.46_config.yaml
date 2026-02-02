@@ -1,0 +1,73 @@
+model_run: fasterrcnn_resnet50_2026-01-26_22.32.46
+device: cuda:0
+rank: 0
+local_rank: 0
+world_size: 2
+is_main: true
+images:
+  resize:
+  - 1024
+  - 1024
+metadata:
+  norm_path: metadata/dataset_norm.json
+  norm:
+    means:
+    - 0.45607941452457035
+    - 0.4613301098895315
+    - 0.3276268550568099
+    std:
+    - 0.25295059190761293
+    - 0.24145019419169375
+    - 0.2300590928582059
+  target_mapping_path: metadata/target_mapping.json
+  target_mapping: null
+logging_level: DEBUG
+directories:
+  train_dir: data/processed/train/labeled
+  val_dir: data/processed/val/images
+  test_dir: data/processed/test
+  annotations_file: data/formatted_bboxes.json
+  output_dir: outputs
+  checkpoint_dir: model_checkpoints
+  log_dir: logs/run_logs
+training:
+  epochs: 300
+  sanity_check: true
+model:
+  backbone_out_channels: 256
+  num_classes: 3
+  detections_per_img: 100
+optimizer:
+  name: AdamW
+  weight_decay: 0.0
+  original_weight_decay: 0.001
+  filter_bias_and_bn: true
+  ema: true
+  ema_decay: 0.9
+  optimizer_params:
+    lr: 0.0003
+    momentum: 0.9
+    nesterov: true
+    dampening: 0.0
+    alpha: 0.99
+    gamma: 0.99
+    etas:
+    - 0.5
+    - 1.2
+    betas:
+    - 0.9
+    - 0.999
+    rho: 0.9
+    amsgrad: false
+    foreach: null
+scheduler:
+  name: ExponentialLR
+  gamma: 0.99
+  step_size: 1.0e-05
+  T_max: 5
+  eta_min: 0.0
+  T_0: null
+  T_mult: 1
+  last_epoch: -1
+batch_size: 6
+num_workers: 6
