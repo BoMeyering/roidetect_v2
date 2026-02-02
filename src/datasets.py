@@ -106,3 +106,79 @@ class InferenceDataset(Dataset):
         image = transformed['image']
 
         return image_id, image, raw_image
+    
+class EffdetDataset(Dataset):
+    def __init__(self, conf: OmegaConf, transforms: A.Compose, type: str='train'):
+        self.conf = conf
+        self.images_dir = self.conf.directories.image_dir
+        if type == 'train':
+            self.annotations_file = self.conf.directories.train_annotations_file
+        else:
+            self.annotations_file = self.conf.directories.val_annotations_file
+        self.transforms = transforms
+
+        with open(self.annotations_file, 'r') as f:
+            self.annotations = json.load(f)
+
+        self.image_ids = [id for id in glob("*", root_dir=self.images_dir) if id.endswith(('jpeg', 'jpg'))]
+
+    def __len__(self):
+        return len(self.annotations.keys())
+
+    def __getitem__(self, idx):
+        image_id = list(self.annotations.keys())[idx]
+        image_path = os.path.join(self.images_dir, image_id)
+        image = cv2.imread(image_path, cv2.IMREAD_COLOR_RGB | cv2.IMREAD_IGNORE_ORIENTATION)
+
+        sample = {
+            "image": image,
+            "bboxes": np.array(self.annotations[image_id]['boxes'], dtype=np.float32),
+            "labels": np.array(self.annotations[image_id]['labels'], dtype=np.int64)
+        }
+
+        sample = self.transforms(**sample)
+        sample["bboxes"] = np.array(sample["bboxes"], dtype=np.float32)
+        image = sample['image']
+        labels = sample['labels']
+
+        _, new_h, new_w = image.shape
+        sample["bboxes"][:, [0, 1, 2, 3]] = sample["bboxes"][:, [1, 0, 3, 2]]  # xyxy to yxyx
+
+        target = {
+            "bboxes": torch.as_tensor(sample["bboxes"], dtype=torch.float32),
+            "labels": torch.as_tensor(labels, dtype=torch.int64),
+            "image_id": torch.tensor([idx], dtype=torch.int64),
+            "img_size": (new_h, new_w),
+            "img_scale": torch.tensor([1.0])
+        }
+
+        return image, target, image_id
+
+class EffdetInferenceDataset(Dataset):
+    def __init__(self, conf: OmegaConf, transforms: A.Compose):
+        self.conf = conf
+        self.images_dir = self.conf.directories.image_dir
+        self.annotations_file = self.conf.directories.val_annotations_file
+        self.transforms = transforms
+
+        with open(self.annotations_file, 'r') as f:
+            self.annotations = json.load(f)
+
+        self.image_ids = [id for id in glob("*", root_dir=self.images_dir) if id.endswith(('jpeg', 'jpg'))]
+
+    def __len__(self):
+        return len(self.annotations.keys())
+
+    def __getitem__(self, idx):
+        image_id = list(self.annotations.keys())[idx]
+        image_path = os.path.join(self.images_dir, image_id)
+        image = cv2.imread(image_path, cv2.IMREAD_COLOR_RGB | cv2.IMREAD_IGNORE_ORIENTATION)
+
+        sample = {
+            "image": image,
+        }
+
+        sample = self.transforms(**sample)
+        image = sample['image']
+
+        return image, image_id

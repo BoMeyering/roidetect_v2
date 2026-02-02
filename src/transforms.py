@@ -15,36 +15,37 @@ from albumentations.pytorch import ToTensorV2
 from typing import Iterable
 from src.utils.config import Norm
 
-def get_train_transforms(rgb_means: Iterable[float]=(0.485, 0.456, 0.406), rgb_stds: Iterable[float]=(0.229, 0.224, 0.225), resize: Iterable[int]=(512, 512)):
+def get_train_transforms(rgb_means: Iterable[float]=(0.485, 0.456, 0.406), rgb_stds: Iterable[float]=(0.229, 0.224, 0.225), resize: int=512):
     return A.Compose(
         [   
-            A.Resize(height=resize[0], width=resize[1]),
+            A.Resize(height=resize, width=resize),
             A.HorizontalFlip(p=0.5),
             A.VerticalFlip(p=0.5),
             A.RandomBrightnessContrast(p=0.2),
             A.GaussianBlur(p=0.5),
             # A.Affine(scale=(0.8, 1.2), translate_percent=(0.0, 0.15), rotate=(-15, 15), p=0.5),
-            A.ToFloat(max_value=255.0),
+            # A.ToFloat(max_value=255.0),
+            A.Normalize(mean=rgb_means, std=rgb_stds, max_pixel_value=255.0),
             ToTensorV2(),
         ],
         bbox_params=A.BboxParams(format='pascal_voc', label_fields=['labels'])
     )
 
-def get_val_transforms(rgb_means: Iterable[float]=(0.485, 0.456, 0.406), rgb_stds: Iterable[float]=(0.229, 0.224, 0.225), resize: Iterable[int]=(512, 512)):
+def get_val_transforms(rgb_means: Iterable[float]=(0.485, 0.456, 0.406), rgb_stds: Iterable[float]=(0.229, 0.224, 0.225), resize: int=512):
     return A.Compose(
         [
-            A.Resize(height=resize[0], width=resize[1]),
-            A.ToFloat(max_value=255.0),
+            A.Resize(height=resize, width=resize),
+            A.Normalize(mean=rgb_means, std=rgb_stds, max_pixel_value=255.0),
             ToTensorV2(),
         ],
         bbox_params=A.BboxParams(format='pascal_voc', label_fields=['labels'])
     )
 
-def get_inference_transforms(rgb_means: Iterable[float]=(0.485, 0.456, 0.406), rgb_stds: Iterable[float]=(0.229, 0.224, 0.225), resize: Iterable[int]=(512, 512)):
+def get_inference_transforms(rgb_means: Iterable[float]=(0.485, 0.456, 0.406), rgb_stds: Iterable[float]=(0.229, 0.224, 0.225), resize: int=512):
     return A.Compose(
         [
-            A.Resize(height=resize[0], width=resize[1]),
-            A.ToFloat(max_value=255.0),
+            A.Resize(height=resize, width=resize),
+            A.Normalize(mean=rgb_means, std=rgb_stds, max_pixel_value=255.0),
             ToTensorV2(),
         ]
     )

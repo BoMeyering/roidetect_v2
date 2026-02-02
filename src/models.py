@@ -8,8 +8,14 @@ BoMeyering 2026
 import torch
 import torchvision
 import torch.nn as nn
+from sys import exception
 from collections import OrderedDict
 from omegaconf import OmegaConf
+from effdet.config.model_config import efficientdet_model_param_dict
+from effdet import create_model
+from effdet.bench import DetBenchTrain, DetBenchPredict
+from effdet import get_efficientdet_config, EfficientDet
+from effdet.efficientdet import HeadNet
 from torchvision.models import swin_t, Swin_T_Weights
 from torchvision.models.detection import RetinaNet, fasterrcnn_resnet50_fpn_v2
 from torchvision.models.detection.anchor_utils import AnchorGenerator
@@ -98,3 +104,95 @@ def create_fasterrcnn(conf: OmegaConf) -> torch.nn.Module:
     )
 
     return model
+
+def create_effdet(conf: OmegaConf) -> torch.nn.Module:
+    """
+    Placeholder for EfficientDet model creation.
+    Currently not implemented in torchvision.
+    """
+    try:
+        config = get_efficientdet_config(conf.effdet.architecture)
+    except KeyError:
+        efficientdet_model_param_dict[conf.effdet.architecture] = {
+            'name': conf.effdet.architecture,
+            'backbone_name': conf.effdet.architecture,
+            'backbone_args': dict(drop_path_rate=0.2),
+            'image_size': conf.images.resize,
+            'num_classes': conf.model.num_classes,
+            'url': None,
+        }
+        config = get_efficientdet_config(conf.effdet.architecture)
+        config.update({'num_classes': conf.model.num_classes})
+        config.update({'image_size': conf.images.resize})
+
+        net = EfficientDet(config, pretrained_backbone=True)
+        net.class_net = HeadNet(
+            config, 
+            num_outputs=config.num_classes,
+        )
+
+        return DetBenchTrain(net, config)
+    
+class EffDetWrapper(nn.Module):
+    def __init__(self, conf: OmegaConf, device: torch.device):
+        super().__init__()
+        try:
+            self.model = create_model(
+                model_name=conf.effdet.architecture,
+                pretrained=True,
+                num_classes=conf.model.num_classes,
+                image_size=(conf.images.resize, conf.images.resize)
+            ).to(device)
+        except Exception as e:
+            print(f"Error creating model: {e}")
+            raise
+
+        # Keep an explicit config for benches
+        self.config = get_efficientdet_config(conf.effdet.architecture)
+        self.config.num_classes = conf.model.num_classes
+        self.config.image_size = conf.images.resize
+
+        self.train_bench = DetBenchTrain(self.model).to(device)
+        self.eval_bench  = DetBenchPredict(self.model).to(device)
+
+    def train_mode(self):
+        self.train_bench.train()
+        self.eval_bench.train()
+
+    def eval_mode(self):
+        self.train_bench.eval()
+        self.eval_bench.eval()
+
+    def forward_train(self, images, targets):
+
+        return self.train_bench(images, targets)
+    
+    @torch.no_grad()
+    def predict(self, images):
+
+        if images.ndim == 3:
+            images = images.unsqueeze(0)
+
+        return self.eval_bench(images)
+
+if __name__ == "__main__":
+    conf = OmegaConf.create({
+        "effdet": {
+            "architecture": "tf_efficientdet_d0",
+        },
+        "model": {
+            "num_classes": 2,
+        },
+        "images": {
+            "resize": 512,
+        },
+    })
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    effdet_wrapper = EffDetWrapper(conf, device)
+    print("EfficientDet model created successfully.")
+
+    img = torch.randn(3, conf.images.resize, conf.images.resize).to(device)
+    outputs = effdet_wrapper.predict(img)
+    print("Prediction completed successfully.")
+    print(outputs)

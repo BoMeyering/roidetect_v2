@@ -15,28 +15,16 @@ from typing import List, Optional, Union, Tuple
 
 @dataclass
 class Images:
-    resize: List[int]=field(default_factory=lambda: [512, 512])
+    resize: int=512
 
 @dataclass
 class Directories:
-    train_dir: str='data/processed/train/labeled'
-    val_dir: str='data/processed/val'
-    test_dir: str='data/processed/test'
-    annotations_file: str='data/formatted_bboxes.json'
+    image_dir: str='data/raw'
+    train_annotations_file: str='data/train_labels.json'
+    val_annotations_file: str='data/val_labels.json'
     output_dir: str='outputs'
     checkpoint_dir: str='model_checkpoints'
     log_dir: str='logs/run_logs'
-
-@dataclass
-class FlexmatchDirectories:
-    train_labeled_dir: str='data/processed/train/labeled'
-    train_unlabeled_dir: str='data/processed/train/unlabeled'
-    val_dir: str='data/processed/val'
-    test_dir: str='data/processed/test'
-    output_dir: str='outputs'
-    checkpoint_dir: str='model_checkpoints'
-    log_dir: str='logs/run_logs'
-    starting_checkpoint_path: Optional[str]=None
 
 @dataclass
 class Training:
@@ -44,20 +32,18 @@ class Training:
     sanity_check: bool=True
 
 @dataclass
-class FlexMatch:
-    tau: float=0.95
-    mapping: str="linear"
-    warmup: bool=True
-    lam: float=1.0
-    l_batch_size: int=2
-    u_batch_size: int=2
-
-@dataclass
 class Model:
     backbone_out_channels: Optional[int]=256
     num_classes: Optional[int]=None
     detections_per_img: int=100
 
+@dataclass
+class Effdet:
+    architecture: str='tf_efficientdet_d0'
+    pretrained: bool=True
+    score_threshold: float=0.01
+    nms_iou_threshold: float=0.5
+    max_detections_per_img: int=100
 
 @dataclass
 class OptimizerParams:
@@ -122,6 +108,7 @@ class TrainSupervisedConfig:
     directories: Directories=field(default_factory=Directories)
     training: Training=field(default_factory=Training)
     model: Model=field(default_factory=Model)
+    effdet: Effdet=field(default_factory=Effdet)
     optimizer: Optimizer=field(default_factory=Optimizer)
     scheduler: Scheduler=field(default_factory=Scheduler)
     batch_size: int=2
