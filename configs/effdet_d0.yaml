@@ -1,0 +1,66 @@
+# Training configs
+model_run: effdet_d0_wd0.01
+
+# Computation Device
+device: cuda
+
+# Images
+images:
+  resize: 1024
+
+# Metadata for normalization
+metadata:
+  norm_path: metadata/dataset_norm.json
+
+# Logging
+logging_level: INFO
+
+# Directories
+directories:
+  image_dir: data/raw
+  train_annotations_file: data/train_labels.json
+  val_annotations_file: data/val_labels.json
+  output_dir: outputs
+  checkpoint_dir: model_checkpoints
+  log_dir: logs/run_logs
+
+# Training
+training:
+  epochs: 30
+  sanity_check: True
+
+# Model Architecture
+model:
+  num_classes: 2
+  detections_per_img: 100
+
+# Optimizer stuff
+optimizer:
+  name: AdamW
+  weight_decay: 0.01
+  filter_bias_and_bn: True
+  ema: True
+  ema_decay: 0.9
+  optimizer_params: 
+    lr: 0.0003
+    momentum: 0.9
+    nesterov: True
+    gamma: 0.99
+
+# Scheduler stuff
+scheduler:
+  name: ExponentialLR
+  gamma: 0.99
+
+# Batch Sizes
+batch_size: 6
+
+# Multi-processing
+num_workers: 6
+
+effdet:
+  architecture: tf_efficientdet_d0
+  pretrained: True
+  score_threshold: 0.01
+  nms_iou_threshold: 0.5
+  max_detections_per_img: 100

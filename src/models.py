@@ -141,7 +141,8 @@ class EffDetWrapper(nn.Module):
                 model_name=conf.effdet.architecture,
                 pretrained=True,
                 num_classes=conf.model.num_classes,
-                image_size=(conf.images.resize, conf.images.resize)
+                image_size=(conf.images.resize, conf.images.resize),
+                max_det_per_image=conf.model.detections_per_img,
             ).to(device)
         except Exception as e:
             print(f"Error creating model: {e}")

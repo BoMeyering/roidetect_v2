@@ -6,7 +6,9 @@ BoMeyering 2025
 
 import torch
 import os
+import sys
 import json
+import wandb
 import time
 import cv2
 from glob import glob
@@ -27,11 +29,11 @@ import numpy as np
 from typing import Union, Optional, Any, Tuple, List
 from torch.utils.tensorboard import SummaryWriter
 from torchmetrics import MeanMetric
+from scipy.optimize import linear_sum_assignment
+from torchvision.ops import box_iou
 from src.models import EffDetWrapper
 from src.parameters import EMA, apply_ema
-# from src.callbacks import ModelCheckpoint
-from src.metrics import MetricLogger, MeterSet, RunningAvgMeter, ValueMeter
-# from src.transforms import get_strong_transforms
+from src.metrics import MetricLogger
 from src.distributed import is_main_process
 from src.utils.loggers import rank_log
 from src.callbacks import CheckpointManager
@@ -425,6 +427,7 @@ class SupervisedTrainer(Trainer):
             if self.scheduler:
                 self.scheduler.step()
 
+
 class EffdetTrainer(Trainer):
     def __init__(
         self,
@@ -453,9 +456,100 @@ class EffdetTrainer(Trainer):
         self.checkpoint_manager = checkpoint_manager
         self.train_loss_meter = MeanMetric().to(self.conf.device)
         self.val_loss_meter = MeanMetric().to(self.conf.device)
+        self.val_metric_logger = MetricLogger(
+            name='Validation Metrics',
+            num_classes=self.conf.model.num_classes,
+            device=self.conf.device
+        )
+
+        # Initialize Weights and Biases for experiment tracking - only on main process to avoid duplicates
+        if conf.is_main:
+            self.run = wandb.init(
+                project="roidetect_v2",
+                entity="bomeyering-the-land-institute",
+                name=conf.model_run,
+                config=OmegaConf.to_container(conf, resolve=True),
+                sync_tensorboard=True,
+            )
+        else:
+            self.run = None
         
-    def unwrap_ddp(self):
+    def _unwrap_ddp(self):
         return self.model.module if isinstance(self.model, torch.nn.parallel.DistributedDataParallel) else self.model
+
+    def _order_preds_by_targets(self, pred_boxes, target_boxes):
+        """ Order a set of predicted boxes by their best matching target box using the Hungarian algorithm. """
+        
+        # Compute bbox IOU matrix
+        box_iou_matrix = box_iou(pred_boxes, target_boxes)
+
+        # Linear sum assignment to find the best matching between preds and targets
+        row_ind, col_ind = linear_sum_assignment(-box_iou_matrix.cpu().numpy())
+
+        return row_ind, col_ind
+    
+    def _format_preds_and_targets(self, preds, targets):
+        """
+        Format preds and targets into a unified format for metric logging.
+
+        Returns:
+            matched_preds, matched_targets: Hungarian-matched pairs for IoU metrics.
+            all_preds, all_targets: Full (unmatched) lists for MeanAveragePrecision.
+        """
+        matched_preds = []
+        matched_targets = []
+        all_preds = []
+        all_targets = []
+
+        for pred_array, target_boxes, target_labels in zip(preds, targets['bbox'], targets['cls']):
+            # Extract prediction arrays
+            pred_boxes = pred_array[:, :4].detach().float()
+            pred_scores = pred_array[:, 4].detach().float()
+            pred_labels = pred_array[:, 5].detach().int() - 1  # Convert to zero-based class indices
+            
+            # Extract and format the targets
+            target_boxes = target_boxes[:, [1, 0, 3, 2]].float()  # Convert from yxyx to xyxy
+            target_labels = target_labels.int() - 1  # Convert to zero-based class indices
+
+            # Always append full (unmatched) preds/targets for MAP
+            all_preds.append({
+                'boxes': pred_boxes.to(self.conf.device),
+                'labels': pred_labels.to(self.conf.device),
+                'scores': pred_scores.to(self.conf.device),
+            })
+            all_targets.append({
+                'boxes': target_boxes.to(self.conf.device),
+                'labels': target_labels.to(self.conf.device),
+            })
+
+            # If an image has no ground truth boxes, append empty matched entries
+            if len(target_boxes) == 0:
+                matched_preds.append({
+                    'boxes': torch.zeros((0, 4), dtype=torch.float32, device=self.conf.device),
+                    'labels': torch.zeros((0,), dtype=torch.int32, device=self.conf.device),
+                    'scores': torch.zeros((0,), dtype=torch.float32, device=self.conf.device),
+                })
+                matched_targets.append({
+                    'boxes': torch.zeros((0, 4), dtype=torch.float32, device=self.conf.device),
+                    'labels': torch.zeros((0,), dtype=torch.int32, device=self.conf.device),
+                })
+                continue
+            
+            # Reorder preds and targets according to the best matching
+            row_ind, col_ind = self._order_preds_by_targets(pred_boxes, target_boxes)
+
+            # Append Hungarian-matched preds and targets
+            matched_preds.append({
+                'boxes': pred_boxes[row_ind].to(self.conf.device),
+                'labels': pred_labels[row_ind].to(self.conf.device),
+                'scores': pred_scores[row_ind].to(self.conf.device),
+            })
+            matched_targets.append({
+                'boxes': target_boxes[col_ind].to(self.conf.device),
+                'labels': target_labels[col_ind].to(self.conf.device),
+            })
+
+        return matched_preds, matched_targets, all_preds, all_targets
 
     def _train_step(self, batch) -> Tuple[Any, Any]:
         """Train over one batch
@@ -474,7 +568,7 @@ class EffdetTrainer(Trainer):
             elif isinstance(v, list):
                 targets[k] = [item.to(self.conf.device, non_blocking=True) for item in v]
 
-        loss_dict = self.unwrap_ddp().forward_train(images, targets)
+        loss_dict = self._unwrap_ddp().forward_train(images, targets)
 
         loss = sum(loss for loss in loss_dict.values())
 
@@ -489,7 +583,7 @@ class EffdetTrainer(Trainer):
                 The current epoch number.
         """
 
-        self.unwrap_ddp().train_mode()
+        self._unwrap_ddp().train_mode()
         self.train_loss_meter.reset()
 
         pbar = tqdm(
@@ -525,12 +619,16 @@ class EffdetTrainer(Trainer):
                     loss=loss.item()
                 )
             )
+            
+            dist.barrier() # DDP barrier to sync after each batch
         
         # ddp barrier
         dist.barrier()
 
         # Compute avg loss (auto syncs across ranks)
         avg_loss = self.train_loss_meter.compute().item()
+        if self.run is not None:
+            self.run.log({"epoch_loss/train": avg_loss})
 
         return avg_loss
         
@@ -553,16 +651,27 @@ class EffdetTrainer(Trainer):
                 targets[k] = [item.to(self.conf.device, non_blocking=True) for item in v]
 
         # Get predictions
-        outputs = self.unwrap_ddp().predict(images)
+        preds = self._unwrap_ddp().predict(images)
         # Get validation loss
 
-        self.unwrap_ddp().train_mode()
-        loss_dict = self.unwrap_ddp().forward_train(images, targets)
-        self.unwrap_ddp().eval_mode()
+        self._unwrap_ddp().train_mode()
+        loss_dict = self._unwrap_ddp().forward_train(images, targets)
+        self._unwrap_ddp().eval_mode()
         # Sum the losses
         loss = sum(loss for loss in loss_dict.values())
 
-        return loss, outputs, len(images)
+        # Format preds and targets for metric logging
+        matched_preds, matched_targets, all_preds, all_targets = self._format_preds_and_targets(preds, targets)
+
+        # Update the validation metrics
+        self.val_metric_logger.update(
+            matched_preds=matched_preds,
+            matched_targets=matched_targets,
+            all_preds=all_preds,
+            all_targets=all_targets,
+        )
+
+        return loss, matched_preds, len(images)
     
     @torch.no_grad()
     def _val_epoch(self, epoch) -> Any:
@@ -574,8 +683,9 @@ class EffdetTrainer(Trainer):
                 The current epoch number.
         """
 
-        self.unwrap_ddp().eval_mode()
+        self._unwrap_ddp().eval_mode()
         self.val_loss_meter.reset()
+        self.val_metric_logger.reset()
 
         with apply_ema(self.ema):
             # Set progress bar and unpack batches
@@ -596,7 +706,7 @@ class EffdetTrainer(Trainer):
                     if batch is None: # Guard against empty batches
                         continue
                     # Validate one batch
-                    loss, outputs, batch_size = self._val_step(batch)
+                    loss, preds, batch_size = self._val_step(batch)
 
                     # Add validation loss to MeanMetric (for unified validation loss over all ranks in DDP)
                     self.val_loss_meter.update(loss.detach(), weight=batch_size)
@@ -612,14 +722,18 @@ class EffdetTrainer(Trainer):
                             loss=loss.item()
                         )
                     )
-                    
-                    # self._sanity_check(batch, outputs, epoch)
+
+                    dist.barrier() # DDP barrier to sync after each batch
 
         # ddp barrier
         dist.barrier()
-
+        
         # Compute avg loss (auto syncs across ranks)
         avg_loss = self.val_loss_meter.compute().item()
+
+        # Compute validation epoch metrics
+        self.val_metric_logger.compute()
+        rank_log(self.conf.is_main, self.logger.info, self.val_metric_logger)
 
         return avg_loss
 
@@ -645,6 +759,16 @@ class EffdetTrainer(Trainer):
                 self.logger.info, 
                 f"Epoch {epoch} - Train Loss: {train_loss:.6f} - Val Loss: {val_loss:.6f}"
             )
+
+            # Wandb logging
+            if self.run is not None:
+                wandb_log_dict = {
+                    "epoch": epoch,
+                    "train_loss": train_loss,
+                    "val_loss": val_loss,
+                }
+                wandb_log_dict |= self.val_metric_logger.results
+                self.run.log(wandb_log_dict)
 
             with apply_ema(self.ema):
                 # Create checkpoint logs

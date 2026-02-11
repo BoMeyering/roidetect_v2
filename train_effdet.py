@@ -7,20 +7,20 @@ BoMeyering 2025
 import torch
 import os
 import logging
-import argparse
+import wandb
 import omegaconf
+import wandb
 import torch.distributed as dist
 from argparse import ArgumentParser
 from pathlib import Path
 from omegaconf import OmegaConf
 from torch.utils.data import DataLoader, DistributedSampler
 from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.utils.tensorboard import SummaryWriter
 import torch.distributed as dist
 
 # Local imports
 from src.models import EffDetWrapper
-from src.datasets import EffdetDataset, EffdetInferenceDataset
+from src.datasets import EffdetDataset
 from src.trainer import EffdetTrainer
 from src.parameters import OptimConfig, EMA
 from src.transforms import get_train_transforms, get_val_transforms, set_normalization_values
@@ -64,7 +64,6 @@ set_run_name(conf)
 # Set up loggers
 setup_loggers(conf)
 logger = logging.getLogger()
-tb_writer = SummaryWriter(Path('runs') / conf.model_run)
 
 # Set torch device - will set conf.device as 'TYPE:LOCAL_RANK' e.g. 'cuda:0', 'cpu:2' etc
 set_torch_device(conf)
@@ -72,11 +71,21 @@ set_torch_device(conf)
 # Set data normalization values
 set_normalization_values(conf)
 
+# Initialize Weights and Biases for experiment tracking - only on main process to avoid duplicates
+if conf.is_main:
+    wandb.init(
+        project="roidetect_v2",
+        entity="bomeyering-the-land-institute",
+        name=conf.model_run,
+        config=OmegaConf.to_container(conf, resolve=True),
+        sync_tensorboard=True,
+    )
+
 def collate_fn(batch):
+    """ Collate function to handle batches of data with variable number of boxes per image. """
     images, targets, image_ids = tuple(zip(*batch))
 
-    images = torch.stack(images)
-    images = images.float()
+    images = torch.stack(images).float()
 
     bboxes = [target['bboxes'].float() for target in targets]
     labels = [target['labels'].float() for target in targets]
@@ -127,8 +136,17 @@ def main(conf: omegaconf.OmegaConf=conf):
     rank_log(conf.is_main, logger.info, f"Total world size: {dist.get_world_size()}")
 
     # Augmentation Pipelines
-    train_transforms = get_train_transforms(resize=conf.images.resize)
-    val_transforms = get_val_transforms(resize=conf.images.resize)
+    train_transforms = get_train_transforms(
+        rgb_means=conf.metadata.norm.means, 
+        rgb_stds=conf.metadata.norm.std, 
+        resize=conf.images.resize
+    )
+    val_transforms = get_val_transforms(
+        rgb_means=conf.metadata.norm.means, 
+        rgb_stds=conf.metadata.norm.std,
+        resize=conf.images.resize
+    )
+
     # test_transforms = get_val_transforms(resize=tuple(conf.images.resize))
 
     # Create Datasets

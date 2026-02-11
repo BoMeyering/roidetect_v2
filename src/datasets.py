@@ -81,8 +81,8 @@ class ValDataset(Dataset):
         targets['boxes'] = torch.tensor(transformed['bboxes'], dtype=torch.float32)
         targets['labels'] = torch.tensor(transformed['labels'], dtype=torch.int64)
 
-        # if targets["boxes"].numel() == 0:
-        #     return None
+        if targets["boxes"].numel() == 0:
+            return None
         
         return image_id, image, targets, raw_image
 

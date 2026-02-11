@@ -9,8 +9,9 @@ from collections import deque
 import numpy as np
 import logging
 import torch
-from torchmetrics import MetricCollection
-from torchmetrics.segmentation import MeanIoU, GeneralizedDiceScore, HausdorffDistance
+from torchmetrics import MetricCollection, MeanMetric
+from torchmetrics.detection.mean_ap import MeanAveragePrecision
+from torchvision.ops import box_iou, generalized_box_iou, complete_box_iou, distance_box_iou
 from typing import Union, List, Optional, Sequence, Iterable
 from numbers import Real
 from abc import ABC, abstractmethod
@@ -219,8 +220,11 @@ class MeterSet:
 
     def means(self, name: Optional[str] = None, postfix: str = ""):
         if name is not None:
-            return {f"{name}_mean{('_' + postfix) if postfix else ''}": self[name].mean}
-        return {f"{n}_mean{('_' + postfix) if postfix else ''}": m.mean for n, m in self.meters.items()}
+
+            pass
+            # return {f"{name}_mean{(,
+                # HausdorffDistance(num_classes=num_classes, input_format='index').to(device)'_' + postfix) if postfix else ''}": self[name].mean}
+        # return {f"{n}_mean{('_' + postfix) if postfix else ''}": m.mean for n, m in self.meters.items()}
 
     def __str__(self):
         lines = [f"{name}: {vm}" for name, vm in sorted(self.meters.items())]
@@ -231,7 +235,25 @@ class MeterSet:
         return f"ValueMeterSet(meters={{ {pairs} }})"
 
 class MetricLogger:
-    """ Wrapper for torchmetrics.MetricCollection """
+    """
+    Wrapper that computes detection metrics correctly:
+    - IoU/GIoU/CIoU/DIoU: computed via torchvision functional ops on
+      Hungarian-matched (aligned) pred-target pairs, accumulated with
+      MeanMetric. This avoids the torchmetrics class-based detection
+      IoU metrics which average the full N×M pairwise matrix (including
+      off-diagonal cross-object entries) and produce misleading results.
+    - MeanAveragePrecision: uses the torchmetrics class-based API which
+      does its own internal greedy matching, so it receives the full
+      (unmatched) predictions and targets.
+    """
+    # Map of metric name -> torchvision functional op
+    _IOU_FNS = {
+        'iou': box_iou,
+        'giou': generalized_box_iou,
+        'ciou': complete_box_iou,
+        'diou': distance_box_iou,
+    }
+
     def __init__(self, name: str, num_classes: int, device: str):
         """
         Initialize the MetricLogger
@@ -244,70 +266,128 @@ class MetricLogger:
                 The computational device for metric calculation
         """
         self.name = name
-        self.avg_metrics = MetricCollection(
-            [
-                MeanIoU(num_classes=num_classes, per_class=False, input_format='index').to(device),
-                GeneralizedDiceScore(num_classes=num_classes, per_class=False, input_format='index').to(device),
-                # HausdorffDistance(num_classes=num_classes, input_format='index').to(device)
-            ]
-        )
+        self.device = device
+        self.num_classes = num_classes
 
-        self.mc_metrics = MetricCollection(
-            [
-                MeanIoU(num_classes=num_classes, per_class=True, input_format='index').to(device),
-                GeneralizedDiceScore(num_classes=num_classes, per_class=True, input_format='index').to(device),
-            ]
-        )
-
-        self.results = {
-            'avg': {},
-            'mc': {}
+        # --- Average IoU metrics (across all classes) ---
+        self.iou_meters = {
+            k: MeanMetric().to(device) for k in self._IOU_FNS
         }
-    
-    def update(self, preds: torch.tensor, targets: torch.tensor, verbose: bool=False):
-        # update avg metrics
-        self.avg_metrics.update(preds, targets)
-        
-        # update multiclass metrics
-        self.mc_metrics.update(preds, targets)
-        
+
+        # --- Per-class IoU metrics ---
+        # Dict of {iou_name: {class_idx: MeanMetric}}
+        self.iou_class_meters = {
+            k: {c: MeanMetric().to(device) for c in range(num_classes)}
+            for k in self._IOU_FNS
+        }
+
+        # MeanAveragePrecision — class-based, does its own matching internally
+        self.map_metric = MeanAveragePrecision(
+            iou_type='bbox',
+            class_metrics=True,
+            average='macro',
+        ).to(device)
+
+        self.results = {}
+
+    def update(
+        self,
+        matched_preds: list[dict[str, torch.Tensor]],
+        matched_targets: list[dict[str, torch.Tensor]],
+        all_preds: Optional[list[dict[str, torch.Tensor]]] = None,
+        all_targets: Optional[list[dict[str, torch.Tensor]]] = None,
+    ):
+        """
+        Update metrics with a batch of predictions and targets.
+
+        Parameters:
+        -----------
+            matched_preds : list[dict]
+                Hungarian-matched predictions (aligned with matched_targets).
+            matched_targets : list[dict]
+                Hungarian-matched targets (aligned with matched_preds).
+            all_preds : list[dict], optional
+                Full (unmatched) predictions for MAP. If None, uses matched_preds.
+            all_targets : list[dict], optional
+                Full (unmatched) targets for MAP. If None, uses matched_targets.
+        """
+        # --- IoU variants on matched pairs ---
+        for pred_dict, tgt_dict in zip(matched_preds, matched_targets):
+            p_boxes = pred_dict['boxes']
+            t_boxes = tgt_dict['boxes']
+            p_labels = pred_dict['labels']
+            t_labels = tgt_dict['labels']
+            if p_boxes.numel() == 0 or t_boxes.numel() == 0:
+                continue
+            n = min(len(p_boxes), len(t_boxes))
+            for name, fn in self._IOU_FNS.items():
+                # Compute full pairwise matrix, take diagonal (matched pairs only)
+                iou_matrix = fn(p_boxes[:n], t_boxes[:n])
+                diag_scores = iou_matrix.diag()
+                # Update average meter
+                self.iou_meters[name].update(diag_scores.mean(), weight=n)
+                # Update per-class meters (group by target label)
+                for c in range(self.num_classes):
+                    mask = t_labels[:n] == c
+                    if mask.any():
+                        class_scores = diag_scores[mask]
+                        self.iou_class_meters[name][c].update(
+                            class_scores.mean(), weight=int(mask.sum())
+                        )
+
+        # --- MAP on full (unmatched) preds/targets ---
+        map_preds = all_preds if all_preds is not None else matched_preds
+        map_targets = all_targets if all_targets is not None else matched_targets
+        self.map_metric.update(map_preds, map_targets)
+
     def compute(self):
         try:
-            self.results['avg'] = self.avg_metrics.compute()
-            self.results['mc'] = self.mc_metrics.compute()
+            results = {}
+            # Average IoU metrics
+            for name, meter in self.iou_meters.items():
+                results[name] = meter.compute()
+            # Per-class IoU metrics
+            for name in self._IOU_FNS:
+                for c, meter in self.iou_class_meters[name].items():
+                    # MeanMetric returns 0 if no updates; check weight to skip empty classes
+                    try:
+                        results[f"{name}/cl_{c}"] = meter.compute()
+                    except Exception:
+                        results[f"{name}/cl_{c}"] = torch.tensor(float('nan'))
+            # MAP metrics (includes per-class MAP via class_metrics=True)
+            results.update(self.map_metric.compute())
+            self.results = results
         except Exception as e:
             logger.error(f"Encountered error when computing metrics. Error: {e}")
-            self.results['avg'], self.results['mc'] = None, None
-    
+            self.results = None
+
     def __str__(self) -> str:
         """
         Nicely format the metric results for printing.
         """
         lines = [self.name + ":"]
 
-        def _format_dict(name: str, d: dict):
-            if d is None or len(d) == 0:
-                return f"   {name}: None"
-            out = [f"   {name}:"]
-            for k, v in d.items():
-                # handle tensor outputs from torchmetrics
+        if self.results is None or len(self.results) == 0:
+            lines.append("   Results: None")
+        else:
+            for k, v in self.results.items():
                 if isinstance(v, torch.Tensor):
                     if v.numel() == 1:
                         v = f"{v.item():.5f}"
                     else:
                         v = [round(x, 5) for x in v.flatten().tolist()]
                 if isinstance(v, float):
-                    out.append(f"       {k:<20s}: {v:.4f}")
+                    lines.append(f"   {k:<20s}: {v:.4f}")
                 else:
-                    out.append(f"       {k:<20s}: {v}")
-            return "\n".join(out)
-        
-        lines.append(_format_dict("Average", self.results.get("avg")))
-        lines.append(_format_dict("Multi-class", self.results.get("mc")))
+                    lines.append(f"   {k:<20s}: {v}")
 
         return "\n" + "\n".join(lines)
 
     def reset(self):
-        """ Rest Metric Collections """
-        self.avg_metrics.reset()
-        self.mc_metrics.reset()
+        """ Reset all metrics """
+        for meter in self.iou_meters.values():
+            meter.reset()
+        for class_meters in self.iou_class_meters.values():
+            for meter in class_meters.values():
+                meter.reset()
+        self.map_metric.reset()
