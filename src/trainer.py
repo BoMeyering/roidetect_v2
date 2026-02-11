@@ -627,8 +627,6 @@ class EffdetTrainer(Trainer):
 
         # Compute avg loss (auto syncs across ranks)
         avg_loss = self.train_loss_meter.compute().item()
-        if self.run is not None:
-            self.run.log({"epoch_loss/train": avg_loss})
 
         return avg_loss
         
