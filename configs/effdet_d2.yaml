@@ -1,5 +1,5 @@
 # Training configs
-model_run: effdet_d2_wd0.01
+model_run: effdet_d2_wd0.005
 
 # Computation Device
 device: cuda
@@ -37,7 +37,7 @@ model:
 # Optimizer stuff
 optimizer:
   name: AdamW
-  weight_decay: 0.01
+  weight_decay: 0.005
   filter_bias_and_bn: True
   ema: True
   ema_decay: 0.9
