@@ -95,6 +95,22 @@ class Metadata:
     target_mapping: Optional[dict]=None
 
 @dataclass
+class WandbConfig:
+    entity: str = 'oxbowsolutions'
+    project: str = 'roi_detect_v2'
+    vis_alpha: float = 0.4
+    num_vis_images: int = 8
+    conf: float = 0.6
+
+@dataclass
+class CheckpointConfig:
+    top_k: int = 5
+    w_loss: float = 0.1   # penalty weight for val_loss (higher loss → lower fitness)
+    w_iou: float = 0.3    # reward weight for mean IoU
+    w_giou: float = 0.4   # reward weight for GIoU
+    w_diou: float = 0.3   # reward weight for DIoU
+
+@dataclass
 class TrainSupervisedConfig:
     model_run: str='model_run'
     device: str='cpu'
@@ -113,6 +129,8 @@ class TrainSupervisedConfig:
     scheduler: Scheduler=field(default_factory=Scheduler)
     batch_size: int=2
     num_workers: int=2
+    wandb: WandbConfig=field(default_factory=WandbConfig)
+    checkpoint: CheckpointConfig=field(default_factory=CheckpointConfig)
 
 # @dataclass
 # class TrainFlexmatchConfig:

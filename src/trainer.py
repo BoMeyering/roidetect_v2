@@ -465,17 +465,82 @@ class EffdetTrainer(Trainer):
         # Initialize Weights and Biases for experiment tracking - only on main process to avoid duplicates
         if conf.is_main:
             self.run = wandb.init(
-                project="roidetect_v2",
-                entity="bomeyering-the-land-institute",
+                project=conf.wandb.project,
+                entity=conf.wandb.entity,
                 name=conf.model_run,
                 config=OmegaConf.to_container(conf, resolve=True),
-                sync_tensorboard=True,
             )
         else:
             self.run = None
+
+        # Select fixed visualization images (evenly spaced across val set, same every epoch)
+        val_ds = self.val_loader.dataset
+        all_ids = list(val_ds.annotations.keys())
+        n_vis = min(conf.wandb.num_vis_images, len(all_ids))
+        self.vis_indices = np.linspace(0, len(all_ids) - 1, n_vis, dtype=int).tolist()
+
+        # Build inverted class map {label_idx -> class_name} from class_mapping.json
+        try:
+            with open('metadata/class_mapping.json', 'r') as f:
+                _class_map = json.load(f)
+            self.idx_to_class = {v: k for k, v in _class_map.items()}
+        except FileNotFoundError:
+            self.idx_to_class = {}
         
     def _unwrap_ddp(self):
         return self.model.module if isinstance(self.model, torch.nn.parallel.DistributedDataParallel) else self.model
+
+    @torch.no_grad()
+    def _log_val_vis_images(self, epoch: int):
+        """Run inference on the fixed vis images and log annotated predictions to wandb."""
+        if not self.conf.is_main or self.run is None:
+            return
+
+        conf_thresh = self.conf.wandb.conf
+        val_ds = self.val_loader.dataset
+        resize = self.conf.images.resize
+        wandb_images = []
+
+        self._unwrap_ddp().eval_mode()
+
+        with torch.inference_mode():
+            with apply_ema(self.ema):
+                for idx in self.vis_indices:
+                    image_tensor, _, image_id = val_ds[idx]
+
+                    # Load at native resolution — boxes will be scaled back from model input size
+                    image_path = os.path.join(self.conf.directories.image_dir, image_id)
+                    raw = cv2.imread(image_path, cv2.IMREAD_COLOR_RGB | cv2.IMREAD_IGNORE_ORIENTATION)
+                    h, w = raw.shape[:2]
+                    w_scale = w / resize
+                    h_scale = h / resize
+
+                    # Run inference on the model-size input tensor
+                    batch = image_tensor.unsqueeze(0).float().to(self.conf.device)
+                    preds = self._unwrap_ddp().predict(batch)
+
+                    # preds[0] shape: [N, 6] — x1, y1, x2, y2, score, label
+                    pred_array = preds[0]
+                    boxes = pred_array[:, :4].cpu().numpy()
+                    scores = pred_array[:, 4].cpu().numpy()
+                    labels = pred_array[:, 5].cpu().numpy().astype(int)
+
+                    # Draw in BGR (blue = (255, 0, 0)) then convert back for wandb
+                    vis = cv2.cvtColor(raw, cv2.COLOR_RGB2BGR)
+                    for box, score, label in zip(boxes, scores, labels):
+                        if score < conf_thresh:
+                            continue
+                        x1, y1, x2, y2 = box
+                        x1, x2 = int(x1 * w_scale), int(x2 * w_scale)
+                        y1, y2 = int(y1 * h_scale), int(y2 * h_scale)
+                        class_name = self.idx_to_class.get(label, f"cls{label}")
+                        cv2.rectangle(vis, (x1, y1), (x2, y2), (255, 0, 0), 3)
+                        cv2.putText(vis, f"{class_name} {score:.2f}", (x1, max(y1 - 10, 0)),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 0, 0), 3)
+
+                    wandb_images.append(wandb.Image(cv2.cvtColor(vis, cv2.COLOR_BGR2RGB), caption=image_id))
+
+        self.run.log({"val/predictions": wandb_images, "epoch": epoch})
 
     def _order_preds_by_targets(self, pred_boxes, target_boxes):
         """ Order a set of predicted boxes by their best matching target box using the Hungarian algorithm. """
@@ -768,14 +833,21 @@ class EffdetTrainer(Trainer):
                 wandb_log_dict |= self.val_metric_logger.results
                 self.run.log(wandb_log_dict)
 
+            # Log annotated prediction images for the fixed vis set
+            self._log_val_vis_images(epoch)
+
             with apply_ema(self.ema):
                 # Create checkpoint logs
                 ema_state_dict = self.model.module.state_dict()
 
+            metric_results = self.val_metric_logger.results or {}
             chkpt_logs = {
                 "epoch": epoch,
                 "train_loss": torch.tensor(train_loss),
                 "val_loss": torch.tensor(val_loss),
+                "iou":  metric_results.get('iou'),
+                "giou": metric_results.get('giou'),
+                "diou": metric_results.get('diou'),
                 "model_state_dict": self.model.module.state_dict(),
                 "ema_state_dict": ema_state_dict,
             }

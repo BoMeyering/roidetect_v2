@@ -1,5 +1,5 @@
 # Training configs
-model_run: effdet_d2_wd0.005
+model_run: effdet_d2_wd0.01
 
 # Computation Device
 device: cuda
@@ -37,7 +37,7 @@ model:
 # Optimizer stuff
 optimizer:
   name: AdamW
-  weight_decay: 0.005
+  weight_decay: 0.01
   filter_bias_and_bn: True
   ema: True
   ema_decay: 0.9
@@ -64,3 +64,19 @@ effdet:
   score_threshold: 0.01
   nms_iou_threshold: 0.5
   max_detections_per_img: 100
+
+# Wandb
+wandb:
+  entity: oxbowsolutions
+  project: roi_detect_v2
+  vis_alpha: 0.4
+  num_vis_images: 8
+  conf: 0.6
+
+# Checkpoint fitness score weights
+checkpoint:
+  top_k: 5
+  w_loss: 0.1   # penalty weight for val_loss
+  w_iou: 0.3    # reward weight for mean IoU
+  w_giou: 0.4   # reward weight for GIoU
+  w_diou: 0.3   # reward weight for DIoU

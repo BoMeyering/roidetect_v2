@@ -71,16 +71,6 @@ set_torch_device(conf)
 # Set data normalization values
 set_normalization_values(conf)
 
-# Initialize Weights and Biases for experiment tracking - only on main process to avoid duplicates
-if conf.is_main:
-    wandb.init(
-        project="roidetect_v2",
-        entity="bomeyering-the-land-institute",
-        name=conf.model_run,
-        config=OmegaConf.to_container(conf, resolve=True),
-        sync_tensorboard=True,
-    )
-
 def collate_fn(batch):
     """ Collate function to handle batches of data with variable number of boxes per image. """
     images, targets, image_ids = tuple(zip(*batch))
